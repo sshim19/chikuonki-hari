@@ -40,10 +40,11 @@
           <section class="panel" id="screen-title">
             <h1 tabindex="-1">蓄音機の針</h1>
             <p class="lead">左の親指でハンドルを一定の速さで右回りに回し、右の親指を下へずらして針をそっと下ろします。傷や曲の終わりの前では、上へずらして針を上げます。</p>
-            <p class="rule">横向きにして、左の親指でハンドルのまわりを右回りに回し続けます。速さが安定しているときだけ、音の高さと速さが合います。右の親指は、針が上がっているあいだ左右にずらして位置を決め、下へゆっくりずらすと針が盤に降ります。強く落とすと盤に傷がつきます。曲の頭でそっと下ろし、傷や終わりの前で上げます。同じ日は、だれが遊んでも同じ盤です。時間が来ると、そこまでの響きで終わります。盤を深く傷めたときは、その瞬間に終わります。</p>
+            <p class="rule">横向きにして、左の親指でハンドルのまわりを右回りに回し続けます。速さが安定しているときだけ、曲の高さと速さが合います。右の親指は、針が上がっているあいだ左右にずらして位置を決め、下へゆっくりずらすと針が盤に降ります。強く落とすと盤に傷がつきます。曲の頭でそっと下ろし、傷や終わりの前で上げます。同じ日は、だれが遊んでも同じ盤です。時間が来ると、そこまでの響きで終わります。盤を深く傷めたときは、その瞬間に終わります。</p>
             <div class="title-disc-wrap">
               <p>盤</p>
               <canvas id="title-disc" width="160" height="160" aria-hidden="true"></canvas>
+              <p class="title-tunes" id="title-tunes"></p>
             </div>
             <p class="meta" id="title-daily">今日の盤はふつう。</p>
             <p class="meta" id="title-date">今日の盤</p>
@@ -55,6 +56,7 @@
             <h1 tabindex="-1">今日の響き</h1>
             <p class="lead" id="over-score"></p>
             <p class="meta" id="over-grade"></p>
+            <p class="meta" id="over-tunes"></p>
             <p class="meta" id="over-today"></p>
             <p class="meta" id="over-best"></p>
             <p class="banner" id="over-new-best" hidden>最高記録です</p>

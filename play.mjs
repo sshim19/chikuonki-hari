@@ -27,7 +27,7 @@ import {
   inRightZone,
 } from "./render/draw.mjs";
 import { createFx, resetFx, syncFx } from "./render/fx.mjs";
-import { createSfx, resetSfx, syncSound, unlockSfx, setMuted } from "./render/sound.mjs";
+import { createSfx, resetSfx, syncSound, unlockSfx, setMuted, programFor } from "./render/sound.mjs";
 import { bindScreens } from "./render/screens.mjs";
 import {
   getJstDate,
@@ -160,7 +160,16 @@ function finishRun(next) {
     bestScore: saved.bestScore,
     isNewBest: saved.isNewBest,
     isNewTodayBest: saved.isNewTodayBest,
+    tunes: tuneTitles(state),
   });
+}
+
+function tuneTitles(s) {
+  try {
+    return programFor(s).map((p) => p.title);
+  } catch {
+    return [];
+  }
 }
 
 function takeInput() {
@@ -439,7 +448,7 @@ function applyOrientation() {
 window.addEventListener("resize", applyOrientation);
 window.addEventListener("orientationchange", applyOrientation);
 
-screens.showTitle({ dateLabel, bestScore: stored.bestScore, params: state.params });
+screens.showTitle({ dateLabel, bestScore: stored.bestScore, params: state.params, tunes: tuneTitles(state) });
 screens.updateHud({ remaining: null, showTime: false, canFinish: false });
 paint();
 requestAnimationFrame(frame);
