@@ -4,7 +4,7 @@
  */
 
 import * as constants from "../engine/constants.mjs";
-import { midiToHz, recordProgram, tuneScore, beatAt } from "../engine/tunes.mjs";
+import { midiToHz, recordProgram, tuneScore, entryEvents, entryIndexAt, beatAtRadius } from "../engine/tunes.mjs";
 
 export const MUTE_KEY = constants.STORAGE_MUTED ?? "chikuonki-hari:muted";
 const MASTER_GAIN = 0.34;
@@ -707,31 +707,33 @@ function syncMusic(sfx, state, { t, omega, inst, seated }) {
     playCrackle(sfx, t, worn);
   }
 
-  const ti = currentTrackIndex(state);
-  const prog = ti >= 0 ? sfx.program?.[ti] : null;
   const rate0 = Number(params?.playRate) || 0;
-  if (!prog || rate0 <= 0) {
-    sfx.musicPos = null; // 曲間の溝。鳴っている音は自然に消える
+  const radius = Number(state.radius);
+  const ti = rate0 > 0 ? entryIndexAt(sfx.program || [], radius) : -1;
+  const prog = ti >= 0 ? sfx.program[ti] : null;
+  if (!prog) {
+    sfx.musicPos = null; // 盤の終わり（ランアウト）。鳴っている音は自然に消える
     return;
   }
-  const tr = params.tracks[ti];
-  const trackT = (Math.max(tr.r0, tr.r1) - Number(state.radius)) / rate0;
-  const beat = beatAt(prog, trackT);
+  const beat = beatAtRadius(prog, radius, rate0);
   const prev = sfx.musicPos;
+  // 前の曲の終わりから次の曲の前奏へは、そのまま続ける（切らない）
+  const flowsOn = prev && ti === prev.track + 1 && Math.abs(prev.radius - radius) < 0.004;
   let from;
-  if (!prev || prev.track !== ti || beat < prev.beat - 1e-6 || beat - prev.beat > 1) {
+  if (flowsOn) {
+    from = -prog.introBeats - 1e-6;
+  } else if (!prev || prev.track !== ti || beat < prev.beat - 1e-6 || beat - prev.beat > 1) {
     // 落とし直し・跳ね・位置替え。前の音は切って、新しい位置から鳴らす
     if (prev) releaseVoices(sfx, 0.05);
     from = beat - 0.12;
   } else {
     from = prev.beat;
   }
-  sfx.musicPos = { track: ti, beat };
+  sfx.musicPos = { track: ti, beat, radius };
   if (beat <= from) return;
   const secPerBeat = 60 / prog.tempo / Math.max(0.2, omega);
-  const score = tuneScore(prog.tune);
-  for (const ev of score.events) {
-    if (ev.beat >= prog.beats || ev.beat >= beat) break;
+  for (const ev of entryEvents(prog)) {
+    if (ev.beat >= beat) break;
     if (ev.beat < from) continue;
     const left = ev.dur - (beat - ev.beat);
     if (left <= 0.05) continue;
@@ -740,19 +742,8 @@ function syncMusic(sfx, state, { t, omega, inst, seated }) {
   }
 }
 
-/**
- * 曲を理想の再生（回転ぴったり）で OfflineAudioContext に描き出す。試聴用。
- * @returns {Promise<AudioBuffer>}
- */
-export function renderTuneOffline(tune, { sampleRate = 44100, tempo, bars, crackle = true } = {}) {
+function offlineRig(len, sampleRate, crackle) {
   const OAC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
-  const score = tuneScore(tune);
-  const tmp = tempo || tune.tempo;
-  const beats = bars ? score.barBeats.slice(0, bars).reduce((s, b) => s + b, 0) : score.totalBeats;
-  const spb = 60 / tmp;
-  const lead = 0.8;
-  const tail = 1.8;
-  const len = lead + beats * spb + tail;
   const ctx = new OAC(1, Math.ceil(len * sampleRate), sampleRate);
   const comp = ctx.createDynamicsCompressor();
   comp.threshold.value = -16;
@@ -802,13 +793,56 @@ export function renderTuneOffline(tune, { sampleRate = 44100, tempo, bars, crack
   bp.connect(ng);
   ng.connect(master);
   src.start(0);
+  return { ctx, bus };
+}
 
+/**
+ * 曲を理想の再生（回転ぴったり）で OfflineAudioContext に描き出す。試聴用。
+ * @returns {Promise<AudioBuffer>}
+ */
+export function renderTuneOffline(tune, { sampleRate = 44100, tempo, bars, crackle = true } = {}) {
+  const score = tuneScore(tune);
+  const tmp = tempo || tune.tempo;
+  const beats = bars ? score.barBeats.slice(0, bars).reduce((s, b) => s + b, 0) : score.totalBeats;
+  const spb = 60 / tmp;
+  const lead = 0.8;
+  const len = lead + beats * spb + 1.8;
+  const { ctx, bus } = offlineRig(len, sampleRate, crackle);
   for (const ev of score.events) {
     if (ev.beat >= beats) continue;
     const dur = ev.dur * spb * (ev.part === "melody" ? 0.95 : 1);
     startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: lead + ev.beat * spb, dur, rate: 1 });
   }
   return ctx.startRendering();
+}
+
+/**
+ * その日の盤の片面を、リードインで針を下ろして回転ぴったりのまま最後まで鳴らした音。
+ * ゲームと同じ曲の並び・前奏・速さ。傷での跳ねは入れない。試聴用。
+ * @returns {Promise<{ buffer: AudioBuffer, marks: { title: string, introAt: number, startAt: number, endAt: number }[] }>}
+ */
+export async function renderSessionOffline(state, { sampleRate = 44100, crackle = true } = {}) {
+  const params = state?.params;
+  const rate = Number(params?.playRate) || 1;
+  const program = programFor(state);
+  const lead = 0.4;
+  const r00 = program.length ? program[0].startR : 0;
+  const tOf = (r) => lead + (r00 - r) / rate;
+  const endR = Math.min(...program.map((p) => p.endR), Number(params?.runOutR) || Infinity);
+  const len = tOf(Number(params?.labelR) || endR) + 0.8;
+  const { ctx, bus } = offlineRig(len, sampleRate, crackle);
+  const marks = [];
+  for (const p of program) {
+    const spb = 60 / p.tempo;
+    const t0 = tOf(p.r0);
+    marks.push({ title: p.title, introAt: tOf(p.startR), startAt: t0, endAt: tOf(p.endR) });
+    for (const ev of entryEvents(p)) {
+      const dur = ev.dur * spb * (ev.part === "melody" ? 0.95 : 1);
+      startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: t0 + ev.beat * spb, dur, rate: 1 });
+    }
+  }
+  const buffer = await ctx.startRendering();
+  return { buffer, marks };
 }
 
 /**

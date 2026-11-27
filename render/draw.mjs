@@ -786,17 +786,15 @@ function programOf(state) {
   return programCache.program;
 }
 
-/** 針のいる溝の曲名（曲間・上げているときは次の曲）。 */
+/** 針のいる溝の曲名。曲間は次の曲の前奏なので、次の曲名を出す。上げているときも同じ。 */
 export function tuneCaption(state) {
   const tracks = tracksOf(state);
   const program = programOf(state);
   const radius = Number(state?.radius);
   if (!tracks.length || !program.length || !Number.isFinite(radius)) return "";
   for (let i = 0; i < tracks.length; i++) {
-    const hi = Math.max(tracks[i].r0, tracks[i].r1);
     const lo = Math.min(tracks[i].r0, tracks[i].r1);
-    if (radius <= hi && radius >= lo) return `${i + 1}曲目『${program[i].title}』`;
-    if (radius > hi) return `つぎは ${i + 1}曲目『${program[i].title}』`;
+    if (radius >= lo) return `${i + 1}曲目『${program[i].title}』`;
   }
   return "盤の終わり";
 }
