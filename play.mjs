@@ -27,7 +27,7 @@ import {
   inRightZone,
 } from "./render/draw.mjs";
 import { createFx, resetFx, syncFx } from "./render/fx.mjs";
-import { createSfx, resetSfx, syncSound, unlockSfx, setMuted, programFor } from "./render/sound.mjs";
+import { createSfx, resetSfx, syncSound, unlockSfx, setMuted, programFor, reshuffleProgram } from "./render/sound.mjs";
 import { bindScreens } from "./render/screens.mjs";
 import {
   getJstDate,
@@ -97,6 +97,8 @@ function titleStateFrom(bests) {
   return { ...playing, status: "title" };
 }
 
+let startedOnce = false;
+
 function freshRun() {
   stored = loadBests(dateJst);
   ended = false;
@@ -104,12 +106,16 @@ function freshRun() {
   lastTs = 0;
   resetFx(fx);
   resetSfx(sfx);
-  return createInitialState({
+  const next = createInitialState({
     seed,
     dateJst,
     bestScore: stored.bestScore ?? 0,
     todayBestScore: stored.todayBestScore ?? 0,
   });
+  // タイトルで見せた曲順は最初のプレイに残し、もう一度遊ぶときだけ選び直す。
+  if (startedOnce) reshuffleProgram(next.params);
+  startedOnce = true;
+  return next;
 }
 
 function tracksComplete(s) {
