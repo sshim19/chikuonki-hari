@@ -28,19 +28,19 @@
             <button type="button" class="btn-finish" id="btn-finish" hidden disabled aria-disabled="true">止める</button>
           </header>
 
-          <canvas id="game" width="844" height="390" aria-label="プレイ画面。左でハンドルを回し、右で針を動かします"></canvas>
+          <canvas id="game" width="844" height="390" aria-label="プレイ画面。左の親指でハンドルを右回りに回し、右の親指を下へずらして針をそっと下ろします"></canvas>
 
           <div class="hud" id="play-hud" hidden>
             <p class="hud-time" id="hud-time"></p>
           </div>
 
           <p class="hint hint-left" id="hint-left" hidden>右回りに回す</p>
-          <p class="hint hint-right" id="hint-right" hidden>そっと落とす</p>
+          <p class="hint hint-right" id="hint-right" hidden>下へそっと下ろす</p>
 
           <section class="panel" id="screen-title">
             <h1 tabindex="-1">蓄音機の針</h1>
-            <p class="lead">左の指でハンドルを一定の速さで回し、右の指で針を下ろしたり上げたりして、今日の盤を鳴らします。</p>
-            <p class="rule">横向きにして、左手でハンドルを右回りに回し、右手で針を動かします。速さが安定しているときだけ、音の高さと速さが合います。ぜんまいは少しずつ落ちるので、回し続けます。曲の頭で針をそっと落とし、傷や終わりの前で上げます。同じ日は、だれが遊んでも同じ盤です。時間が来ると、そこまでの響きで終わります。</p>
+            <p class="lead">左の親指でハンドルを一定の速さで右回りに回し、右の親指を下へずらして針をそっと下ろします。傷や曲の終わりの前では、上へずらして針を上げます。</p>
+            <p class="rule">横向きにして、左の親指でハンドルのまわりを右回りに回し続けます。速さが安定しているときだけ、音の高さと速さが合います。右の親指は、針が上がっているあいだ左右にずらして位置を決め、下へゆっくりずらすと針が盤に降ります。強く落とすと盤に傷がつきます。曲の頭でそっと下ろし、傷や終わりの前で上げます。同じ日は、だれが遊んでも同じ盤です。時間が来ると、そこまでの響きで終わります。盤を深く傷めたときは、その瞬間に終わります。</p>
             <div class="title-disc-wrap">
               <p>盤</p>
               <canvas id="title-disc" width="160" height="160" aria-hidden="true"></canvas>
