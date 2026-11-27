@@ -69,7 +69,7 @@ export function bindScreens(root = document) {
   function setTunes(node, tunes) {
     if (!node) return;
     const list = Array.isArray(tunes) ? tunes.filter(Boolean) : [];
-    node.textContent = list.length ? `今日の曲　${list.map((t) => `『${t}』`).join("")}` : "";
+    node.textContent = list.length ? `今回の曲　${list.map((t) => `『${t}』`).join("")}` : "";
     node.hidden = !list.length;
   }
 
@@ -89,7 +89,7 @@ export function bindScreens(root = document) {
     if (el.titleDate) el.titleDate.textContent = `今日の盤（${data.dateLabel}）`;
     if (el.titleTunes) {
       const list = Array.isArray(data.tunes) ? data.tunes.filter(Boolean) : [];
-      el.titleTunes.textContent = list.length ? ["今日の曲", ...list].join("\n") : "";
+      el.titleTunes.textContent = list.length ? ["今回の曲", ...list].join("\n") : "";
       el.titleTunes.hidden = !list.length;
     }
     if (el.titleRecord) {

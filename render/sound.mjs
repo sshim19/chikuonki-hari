@@ -4,7 +4,7 @@
  */
 
 import * as constants from "../engine/constants.mjs";
-import { midiToHz, recordProgram, tuneScore, entryEvents, entryIndexAt, beatAtRadius } from "../engine/tunes.mjs";
+import { midiToHz, tuneScore, entryEvents, entryIndexAt, beatAtRadius, programFor as programForParams, programSessionId, reshuffleProgram } from "../engine/tunes.mjs";
 
 export const MUTE_KEY = constants.STORAGE_MUTED ?? "chikuonki-hari:muted";
 const MASTER_GAIN = 0.34;
@@ -183,6 +183,8 @@ export function resetSfx(sfx) {
   sfx.prev = null;
   sfx.lastCrankAt = 0;
   sfx.musicPos = null;
+  sfx.program = null;
+  sfx.programKey = "";
   stopLoops(sfx, true);
 }
 
@@ -538,8 +540,75 @@ function syncLoops(sfx, state) {
 
 // ---- 曲（engine/tunes.mjs の書き下ろし曲）を盤の回転に合わせて鳴らす ----
 
-const VOICE_GAIN = { melody: 0.15, bass: 0.085, chord: 0.028 };
-const MAX_VOICES = 28;
+const VOICE_GAIN = { melody: 0.15, bass: 0.085, chord: 0.028, arp: 0.03, kick: 0.16, snare: 0.07, hat: 0.022, rim: 0.05 };
+const DRUMS = new Set(["kick", "snare", "hat", "rim"]);
+const MAX_VOICES = 44;
+const drumNoise = new WeakMap();
+
+function drumNoiseBuffer(ctx) {
+  let buf = drumNoise.get(ctx);
+  if (buf) return buf;
+  const len = Math.floor(ctx.sampleRate * 0.4);
+  buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  let a = 0x2545f491;
+  for (let i = 0; i < len; i++) {
+    a ^= a << 13;
+    a ^= a >>> 17;
+    a ^= a << 5;
+    d[i] = ((a >>> 0) / 4294967296) * 2 - 1;
+  }
+  drumNoise.set(ctx, buf);
+  return buf;
+}
+
+/** 打楽器（バスドラム・スネア・ハイハット・リム）。古い録音らしく軽く、帯域は同じ通り道を通る。 */
+function startDrum(ctx, bus, { part, t0, rate = 1 }) {
+  const g = ctx.createGain();
+  const peak = VOICE_GAIN[part] ?? 0.04;
+  const oscs = [];
+  let len;
+  if (part === "kick") {
+    len = 0.16;
+    const o = ctx.createOscillator();
+    o.type = "sine";
+    o.frequency.setValueAtTime(210 * rate, t0);
+    o.frequency.exponentialRampToValueAtTime(Math.max(30, 80 * rate), t0 + 0.12);
+    o.connect(g);
+    oscs.push({ o, mul: 1 });
+  } else {
+    len = part === "snare" ? 0.14 : part === "rim" ? 0.035 : 0.04;
+    const src = ctx.createBufferSource();
+    src.buffer = drumNoiseBuffer(ctx);
+    const f = ctx.createBiquadFilter();
+    f.type = part === "hat" ? "highpass" : "bandpass";
+    f.frequency.value = part === "hat" ? 5200 : part === "rim" ? 2600 : 1700;
+    f.Q.value = part === "rim" ? 4 : 0.8;
+    src.connect(f);
+    f.connect(g);
+    oscs.push({ o: src, mul: 1 });
+    if (part === "snare") {
+      const o = ctx.createOscillator();
+      o.type = "triangle";
+      o.frequency.setValueAtTime(190 * rate, t0);
+      const og = ctx.createGain();
+      og.gain.value = 0.5;
+      o.connect(og);
+      og.connect(g);
+      oscs.push({ o, mul: 1 });
+    }
+  }
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(peak, t0 + 0.002);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + len);
+  const stopAt = t0 + len + 0.02;
+  g.connect(bus.input);
+  for (const { o } of oscs) {
+    o.start(t0);
+    o.stop(stopAt);
+  }
+  return { oscs, gain: g, base: 0, stopAt, released: false, fixed: true };
+}
 
 /** 古いラッパ蓄音機らしい帯域の狭い音の通り道。 */
 function createMusicBus(ctx, dest) {
@@ -574,7 +643,8 @@ function createMusicBus(ctx, dest) {
 }
 
 /** 1音を鳴らす。rate は回転の比（音の高さに掛ける）。 */
-function startVoice(ctx, bus, { midi, part, t0, dur, rate = 1 }) {
+function startVoice(ctx, bus, { midi, part, t0, dur, rate = 1, timbre }) {
+  if (DRUMS.has(part)) return startDrum(ctx, bus, { part, t0, rate });
   const base = midiToHz(midi);
   const f = base * Math.max(0.05, rate);
   const g = ctx.createGain();
@@ -591,7 +661,12 @@ function startVoice(ctx, bus, { midi, part, t0, dur, rate = 1 }) {
     og.connect(g);
     oscs.push({ o, mul });
   };
-  if (part === "melody") {
+  if (part === "melody" && timbre === "chip") {
+    add("square", 1, 0.55);
+    add("triangle", 1, 0.6);
+  } else if (part === "arp") {
+    add("square", 1, 0.5);
+  } else if (part === "melody") {
     add("triangle", 1, 1);
     add("square", 1, 0.16, 6);
     add("sine", 2, 0.12);
@@ -660,9 +735,11 @@ function playCrackle(sfx, t, worn) {
   playNoiseBurst(sfx, { t0: t, dur: 0.006 + Math.random() * 0.006, peak, hp: 1600, lp: 6400, attack: 0.001 });
 }
 
-/** その日の盤の曲の並び（溝ごとの曲・速さ）。音と描画が同じものを使う。 */
+export { reshuffleProgram };
+
+/** このプレイの曲の並び（溝ごとの曲・速さ）。音と描画が同じものを使う。 */
 export function programFor(state) {
-  return recordProgram(state?.seed || state?.dateJst || "", state?.params);
+  return programForParams(state?.params);
 }
 
 /**
@@ -676,7 +753,7 @@ function syncMusic(sfx, state, { t, omega, inst, seated }) {
   if (!ctx || !bus) return;
   pruneVoices(sfx, t);
   const params = state?.params;
-  const key = `${state?.seed}|${params?.tracks?.length}|${params?.playRate}`;
+  const key = `${programSessionId()}|${params?.tracks?.length}|${params?.playRate}`;
   if (sfx.programKey !== key) {
     sfx.program = programFor(state);
     sfx.programKey = key;
@@ -689,7 +766,7 @@ function syncMusic(sfx, state, { t, omega, inst, seated }) {
   const rate = Math.max(0.05, omega) * wow;
   bus.lp.frequency.setTargetAtTime(1500 + 1900 * inst, t, 0.12);
   for (const v of sfx.voices) {
-    if (v.released) continue;
+    if (v.released || v.fixed) continue;
     for (const { o, mul } of v.oscs) o.frequency.setTargetAtTime(v.base * mul * rate, t, 0.03);
   }
 
@@ -736,13 +813,13 @@ function syncMusic(sfx, state, { t, omega, inst, seated }) {
     if (ev.beat >= beat) break;
     if (ev.beat < from) continue;
     const left = ev.dur - (beat - ev.beat);
-    if (left <= 0.05) continue;
-    const dur = left * secPerBeat * (ev.part === "melody" ? 0.95 : 1);
-    sfx.voices.push(startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: t + 0.005, dur, rate }));
+    if (DRUMS.has(ev.part) ? beat - ev.beat > 0.15 : left <= 0.05) continue;
+    const dur = Math.max(0.03, left) * secPerBeat * (ev.part === "melody" ? 0.95 : 1);
+    sfx.voices.push(startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: t + 0.005, dur, rate, timbre: prog.tune.timbre }));
   }
 }
 
-function offlineRig(len, sampleRate, crackle) {
+function offlineRig(len, sampleRate, crackle, clean = false) {
   const OAC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
   const ctx = new OAC(1, Math.ceil(len * sampleRate), sampleRate);
   const comp = ctx.createDynamicsCompressor();
@@ -755,6 +832,12 @@ function offlineRig(len, sampleRate, crackle) {
   master.gain.value = MASTER_GAIN * 1.6;
   master.connect(comp);
   comp.connect(ctx.destination);
+  if (clean) {
+    // 蓄音機の帯域を通さない、作曲そのものの確認用
+    const input = ctx.createGain();
+    input.connect(master);
+    return { ctx, bus: { input } };
+  }
   const bus = createMusicBus(ctx, master);
   bus.lp.frequency.value = 3400;
 
@@ -800,24 +883,24 @@ function offlineRig(len, sampleRate, crackle) {
  * 曲を理想の再生（回転ぴったり）で OfflineAudioContext に描き出す。試聴用。
  * @returns {Promise<AudioBuffer>}
  */
-export function renderTuneOffline(tune, { sampleRate = 44100, tempo, bars, crackle = true } = {}) {
+export function renderTuneOffline(tune, { sampleRate = 44100, tempo, bars, crackle = true, clean = false } = {}) {
   const score = tuneScore(tune);
   const tmp = tempo || tune.tempo;
   const beats = bars ? score.barBeats.slice(0, bars).reduce((s, b) => s + b, 0) : score.totalBeats;
   const spb = 60 / tmp;
   const lead = 0.8;
   const len = lead + beats * spb + 1.8;
-  const { ctx, bus } = offlineRig(len, sampleRate, crackle);
+  const { ctx, bus } = offlineRig(len, sampleRate, crackle, clean);
   for (const ev of score.events) {
     if (ev.beat >= beats) continue;
     const dur = ev.dur * spb * (ev.part === "melody" ? 0.95 : 1);
-    startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: lead + ev.beat * spb, dur, rate: 1 });
+    startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: lead + ev.beat * spb, dur, rate: 1, timbre: tune.timbre });
   }
   return ctx.startRendering();
 }
 
 /**
- * その日の盤の片面を、リードインで針を下ろして回転ぴったりのまま最後まで鳴らした音。
+ * このプレイの盤の片面を、リードインで針を下ろして回転ぴったりのまま最後まで鳴らした音。
  * ゲームと同じ曲の並び・前奏・速さ。傷での跳ねは入れない。試聴用。
  * @returns {Promise<{ buffer: AudioBuffer, marks: { title: string, introAt: number, startAt: number, endAt: number }[] }>}
  */
@@ -838,7 +921,7 @@ export async function renderSessionOffline(state, { sampleRate = 44100, crackle 
     marks.push({ title: p.title, introAt: tOf(p.startR), startAt: t0, endAt: tOf(p.endR) });
     for (const ev of entryEvents(p)) {
       const dur = ev.dur * spb * (ev.part === "melody" ? 0.95 : 1);
-      startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: t0 + ev.beat * spb, dur, rate: 1 });
+      startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: t0 + ev.beat * spb, dur, rate: 1, timbre: p.tune.timbre });
     }
   }
   const buffer = await ctx.startRendering();

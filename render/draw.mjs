@@ -6,7 +6,7 @@
 import * as constants from "../engine/constants.mjs";
 import { drawFx, revealZoom } from "./fx.mjs";
 import { drawMotionGuides } from "./hand-guides.mjs";
-import { recordProgram } from "../engine/tunes.mjs";
+import { programFor as programForParams, programSessionId } from "../engine/tunes.mjs";
 
 export const VIEW_W = constants.VIEW_W ?? 844;
 export const VIEW_H = constants.VIEW_H ?? 390;
@@ -779,9 +779,9 @@ let programCache = { key: "", program: [] };
 
 function programOf(state) {
   const params = state?.params;
-  const key = `${state?.seed}|${params?.tracks?.length}|${params?.playRate}`;
+  const key = `${programSessionId()}|${params?.tracks?.length}|${params?.playRate}`;
   if (programCache.key !== key) {
-    programCache = { key, program: recordProgram(state?.seed || state?.dateJst || "", params) };
+    programCache = { key, program: programForParams(params) };
   }
   return programCache.program;
 }
