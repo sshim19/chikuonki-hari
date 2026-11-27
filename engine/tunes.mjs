@@ -304,18 +304,88 @@ export function fitTune(tune, trackSec) {
 
 /**
  * その日の盤の曲の並び。各溝に曲と速さを割り当てる。
+ * 曲間（とリードイン）は、次の曲の前奏として鳴らす区間にする（音の途切れをなくす）。
+ * 各要素の startR〜endR が、その曲が鳴る半径の範囲（startR は前の曲が鳴り終わる位置）。
  * @param {string} seed
- * @param {{ tracks: {r0:number,r1:number}[], playRate: number }} params
+ * @param {{ tracks: {r0:number,r1:number}[], playRate: number, leadInR?: number }} params
  */
 export function recordProgram(seed, params) {
   const tracks = Array.isArray(params?.tracks) ? params.tracks : [];
   const rate = Number(params?.playRate) || 0;
   const tunes = pickTunes(seed, tracks.length);
-  return tracks.map((tr, i) => {
+  const out = [];
+  let prevEndR = Number(params?.leadInR);
+  tracks.forEach((tr, i) => {
+    const r0 = Math.max(tr.r0, tr.r1);
     const sec = rate > 0 ? Math.abs(tr.r0 - tr.r1) / rate : 10;
     const tune = tunes[i] || TUNES[i % TUNES.length];
-    return { index: i, tune, title: tune.title, trackSec: sec, ...fitTune(tune, sec) };
+    const fit = fitTune(tune, sec);
+    if (!Number.isFinite(prevEndR) || prevEndR < r0) prevEndR = r0;
+    const introSec = rate > 0 ? (prevEndR - r0) / rate : 0;
+    const endR = r0 - fit.playSec * rate;
+    out.push({
+      index: i,
+      tune,
+      title: tune.title,
+      trackSec: sec,
+      ...fit,
+      r0,
+      startR: prevEndR,
+      endR,
+      introSec,
+      introBeats: (introSec * fit.tempo) / 60,
+    });
+    prevEndR = endR;
   });
+  return out;
+}
+
+const eventCache = new Map();
+
+/**
+ * 曲の音（前奏 + 本編）。前奏は 1小節目の伴奏を、1小節目の頭へ向けて負の拍に敷き詰めたもの。
+ * 拍 0 が溝の頭（r0）。本編は切れ目（beats）まで。
+ */
+export function entryEvents(entry) {
+  const key = `${entry.tune.id}|${entry.beats}|${Math.round(entry.introBeats * 1000)}`;
+  if (eventCache.has(key)) return eventCache.get(key);
+  const score = tuneScore(entry.tune);
+  const meter = entry.tune.meter;
+  const bar1 = score.events.filter((e) => e.part !== "melody" && e.beat < meter);
+  const intro = [];
+  for (let k = 1; k * meter - meter < entry.introBeats + meter; k++) {
+    for (const e of bar1) {
+      const b = e.beat - k * meter;
+      if (b >= -entry.introBeats - 1e-9 && b < 0) intro.push({ ...e, beat: b, dur: Math.min(e.dur, -b), intro: true });
+    }
+  }
+  // 小節の途中から始まる前奏の頭を、主音の低音でつなぐ（前の曲の終わりから間を空けない）
+  if (entry.introBeats > 0.05) {
+    const first = intro.reduce((m, e) => Math.min(m, e.beat), 0);
+    const lead = first - -entry.introBeats;
+    if (lead > 0.1) {
+      const root = parseChord(entry.tune.chords[0]).root;
+      intro.push({ beat: -entry.introBeats, dur: lead, midi: 48 + root, part: "bass", intro: true });
+    }
+  }
+  const body = score.events.filter((e) => e.beat < entry.beats);
+  const list = [...intro, ...body].sort((a, b) => a.beat - b.beat);
+  eventCache.set(key, list);
+  return list;
+}
+
+/** 半径から、いま鳴らす曲（前奏を含む）を探す。なければ -1。 */
+export function entryIndexAt(program, radius) {
+  for (let i = 0; i < program.length; i++) {
+    const p = program[i];
+    if (radius <= p.startR + 1e-9 && radius > p.endR) return i;
+  }
+  return -1;
+}
+
+/** 半径 → その曲の拍（溝の頭が 0、前奏は負）。 */
+export function beatAtRadius(entry, radius, playRate) {
+  return ((entry.r0 - radius) / playRate) * (entry.tempo / 60);
 }
 
 /** 溝の中の位置（omega=1 の秒）→ 曲の拍。 */
