@@ -4,6 +4,7 @@
  */
 
 import * as constants from "../engine/constants.mjs";
+import { midiToHz, recordProgram, tuneScore, beatAt } from "../engine/tunes.mjs";
 
 export const MUTE_KEY = constants.STORAGE_MUTED ?? "chikuonki-hari:muted";
 const MASTER_GAIN = 0.34;
@@ -167,14 +168,13 @@ export function createSfx() {
     grooveSrc: null,
     grooveFilter: null,
     grooveGain: null,
-    motifOsc: null,
-    motifOsc2: null,
-    motifFilter: null,
-    motifGain: null,
+    music: null,
+    voices: [],
+    program: null,
+    programKey: "",
+    musicPos: null,
+    lastCrackleAt: 0,
     lastCrankAt: 0,
-    lastMotifAt: 0,
-    motifStep: 0,
-    motifSeed: 0,
   };
 }
 
@@ -182,8 +182,7 @@ export function resetSfx(sfx) {
   if (!sfx) return;
   sfx.prev = null;
   sfx.lastCrankAt = 0;
-  sfx.lastMotifAt = 0;
-  sfx.motifStep = 0;
+  sfx.musicPos = null;
   stopLoops(sfx, true);
 }
 
@@ -379,18 +378,6 @@ function hashSeed(s) {
   return h >>> 0;
 }
 
-function motifNotes(seed, track) {
-  const base = [196, 220, 247, 262, 294, 330, 349, 392];
-  let a = hashSeed(`${seed}:${track}`) || 1;
-  const notes = [];
-  const n = 3 + (a % 3);
-  for (let i = 0; i < n; i++) {
-    a = Math.imul(a ^ (a >>> 15), a | 1) >>> 0;
-    notes.push(base[a % base.length]);
-  }
-  return notes;
-}
-
 function ensureLoops(sfx) {
   const ctx = sfx.ctx;
   if (!ctx || !sfx.master) return;
@@ -441,29 +428,7 @@ function ensureLoops(sfx) {
     sfx.grooveFilter = filter;
     sfx.grooveGain = gain;
   }
-  if (!sfx.motifOsc) {
-    const osc = ctx.createOscillator();
-    osc.type = "triangle";
-    osc.frequency.value = 262;
-    const osc2 = ctx.createOscillator();
-    osc2.type = "sine";
-    osc2.frequency.value = 392;
-    const filter = ctx.createBiquadFilter();
-    filter.type = "lowpass";
-    filter.frequency.value = 1800;
-    const gain = ctx.createGain();
-    gain.gain.value = 0;
-    osc.connect(filter);
-    osc2.connect(filter);
-    filter.connect(gain);
-    gain.connect(sfx.master);
-    osc.start();
-    osc2.start();
-    sfx.motifOsc = osc;
-    sfx.motifOsc2 = osc2;
-    sfx.motifFilter = filter;
-    sfx.motifGain = gain;
-  }
+  if (!sfx.music) sfx.music = createMusicBus(ctx, sfx.master);
 }
 
 function stopLoops(sfx, immediate) {
@@ -476,10 +441,9 @@ function stopLoops(sfx, immediate) {
     sfx.grooveSrc = null;
     sfx.grooveFilter = null;
     sfx.grooveGain = null;
-    sfx.motifOsc = null;
-    sfx.motifOsc2 = null;
-    sfx.motifFilter = null;
-    sfx.motifGain = null;
+    sfx.music = null;
+    sfx.voices = [];
+    sfx.musicPos = null;
     return;
   }
   const t = sfx.ctx.currentTime;
@@ -497,7 +461,8 @@ function stopLoops(sfx, immediate) {
   fade(sfx.rumbleGain);
   fade(sfx.rumbleOscGain);
   fade(sfx.grooveGain);
-  fade(sfx.motifGain);
+  releaseVoices(sfx, immediate ? 0.02 : 0.25);
+  sfx.musicPos = null;
   if (immediate) {
     const stop = (node) => {
       if (!node) return;
@@ -515,8 +480,6 @@ function stopLoops(sfx, immediate) {
     stop(sfx.rumbleSrc);
     stop(sfx.rumbleOsc);
     stop(sfx.grooveSrc);
-    stop(sfx.motifOsc);
-    stop(sfx.motifOsc2);
     sfx.rumbleSrc = null;
     sfx.rumbleFilter = null;
     sfx.rumbleGain = null;
@@ -525,10 +488,14 @@ function stopLoops(sfx, immediate) {
     sfx.grooveSrc = null;
     sfx.grooveFilter = null;
     sfx.grooveGain = null;
-    sfx.motifOsc = null;
-    sfx.motifOsc2 = null;
-    sfx.motifFilter = null;
-    sfx.motifGain = null;
+    if (sfx.music) {
+      try {
+        sfx.music.out.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    sfx.music = null;
   }
 }
 
@@ -537,7 +504,7 @@ function syncLoops(sfx, state) {
   const playing = state?.status === "playing";
   const phase = state?.phase;
   if (!playing || phase === "reveal" || phase === "place" || state?.ruined) {
-    if (sfx.rumbleGain || sfx.motifGain) stopLoops(sfx, false);
+    if (sfx.rumbleGain || sfx.voices.length) stopLoops(sfx, false);
     return;
   }
 
@@ -548,7 +515,6 @@ function syncLoops(sfx, state) {
   const crankRate = Number(state?.left?.crankRate) || 0;
   const seated = !!state?.seated && (Number(state?.airborneT) || 0) <= 0;
   const inst = pitchInst(omega);
-  const track = currentTrackIndex(state);
 
   const rumble = omega > 0.04 ? clamp(0.012 + omega * 0.03, 0, 0.055) * (0.55 + 0.45 * clamp(wind, 0, 1)) : 0;
   if (sfx.rumbleGain) sfx.rumbleGain.gain.setTargetAtTime(rumble, t, 0.12);
@@ -559,38 +525,294 @@ function syncLoops(sfx, state) {
   if (sfx.rumbleOsc) sfx.rumbleOsc.frequency.setTargetAtTime(40 + omega * 28, t, 0.16);
   if (sfx.rumbleOscGain) sfx.rumbleOscGain.gain.setTargetAtTime(rumble * 0.45, t, 0.14);
 
-  const groove = seated && omega > 0.05 ? 0.018 + inst * 0.02 : 0;
+  const groove = seated && omega > 0.05 ? 0.012 + inst * 0.012 : 0;
   if (sfx.grooveGain) sfx.grooveGain.gain.setTargetAtTime(groove, t, 0.1);
   if (sfx.grooveFilter) {
     sfx.grooveFilter.frequency.setTargetAtTime(900 + inst * 900, t, 0.14);
   }
 
-  const motifOn = seated && track >= 0 && omega > 0.08 && !state?.ruined;
-  const motifGain = motifOn ? 0.018 + inst * 0.055 : 0;
-  if (sfx.motifGain) sfx.motifGain.gain.setTargetAtTime(motifGain, t, 0.1);
-  if (sfx.motifFilter) {
-    const wobble = inst < 0.7 ? 700 + inst * 800 : 1600 + inst * 600;
-    sfx.motifFilter.frequency.setTargetAtTime(wobble, t, 0.12);
-  }
-
-  if (motifOn && sfx.motifOsc) {
-    const notes = motifNotes(state?.seed || state?.dateJst, track);
-    const stepDur = 0.28 / Math.max(0.35, omega);
-    if (t - (sfx.lastMotifAt || 0) >= stepDur) {
-      sfx.lastMotifAt = t;
-      sfx.motifStep = (sfx.motifStep + 1) % notes.length;
-    }
-    const freq = notes[sfx.motifStep % notes.length] * Math.max(0.4, omega);
-    const detune = inst >= 0.85 ? 1 : 1 + (1 - inst) * 0.08 * Math.sin(t * 9);
-    sfx.motifOsc.frequency.setTargetAtTime(freq * detune, t, 0.06);
-    if (sfx.motifOsc2) sfx.motifOsc2.frequency.setTargetAtTime(freq * 1.5 * detune, t, 0.08);
-  }
+  syncMusic(sfx, state, { t, omega, inst, seated });
 
   if (crankRate >= 0.18) playCrankTick(sfx, crankRate);
 }
 
+// ---- 曲（engine/tunes.mjs の書き下ろし曲）を盤の回転に合わせて鳴らす ----
+
+const VOICE_GAIN = { melody: 0.15, bass: 0.085, chord: 0.028 };
+const MAX_VOICES = 28;
+
+/** 古いラッパ蓄音機らしい帯域の狭い音の通り道。 */
+function createMusicBus(ctx, dest) {
+  const input = ctx.createGain();
+  input.gain.value = 1;
+  const hp = ctx.createBiquadFilter();
+  hp.type = "highpass";
+  hp.frequency.value = 170;
+  hp.Q.value = 0.6;
+  const horn = ctx.createBiquadFilter();
+  horn.type = "peaking";
+  horn.frequency.value = 1150;
+  horn.Q.value = 0.9;
+  horn.gain.value = 5;
+  const lp = ctx.createBiquadFilter();
+  lp.type = "lowpass";
+  lp.frequency.value = 3300;
+  lp.Q.value = 0.5;
+  const lp2 = ctx.createBiquadFilter();
+  lp2.type = "lowpass";
+  lp2.frequency.value = 4200;
+  lp2.Q.value = 0.4;
+  const out = ctx.createGain();
+  out.gain.value = 1;
+  input.connect(hp);
+  hp.connect(horn);
+  horn.connect(lp);
+  lp.connect(lp2);
+  lp2.connect(out);
+  out.connect(dest);
+  return { input, hp, horn, lp, lp2, out };
+}
+
+/** 1音を鳴らす。rate は回転の比（音の高さに掛ける）。 */
+function startVoice(ctx, bus, { midi, part, t0, dur, rate = 1 }) {
+  const base = midiToHz(midi);
+  const f = base * Math.max(0.05, rate);
+  const g = ctx.createGain();
+  const peak = VOICE_GAIN[part] ?? 0.05;
+  const oscs = [];
+  const add = (type, mul, level, detune = 0) => {
+    const o = ctx.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f * mul, t0);
+    if (detune) o.detune.value = detune;
+    const og = ctx.createGain();
+    og.gain.value = level;
+    o.connect(og);
+    og.connect(g);
+    oscs.push({ o, mul });
+  };
+  if (part === "melody") {
+    add("triangle", 1, 1);
+    add("square", 1, 0.16, 6);
+    add("sine", 2, 0.12);
+  } else if (part === "bass") {
+    add("triangle", 1, 1);
+    add("sine", 2, 0.35);
+  } else {
+    add("sine", 1, 1);
+    add("triangle", 1, 0.4, -5);
+  }
+  const atk = 0.012;
+  const sus = part === "melody" ? 0.62 : 0.45;
+  const rel = part === "melody" ? 0.09 : 0.07;
+  const end = t0 + Math.max(0.06, dur);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.linearRampToValueAtTime(peak, t0 + atk);
+  g.gain.setTargetAtTime(peak * sus, t0 + atk, 0.12);
+  g.gain.setTargetAtTime(0.0001, end, rel / 3);
+  const stopAt = end + rel * 2.5 + 0.03;
+  g.connect(bus.input);
+  for (const { o } of oscs) {
+    o.start(t0);
+    o.stop(stopAt);
+  }
+  return { oscs, gain: g, base, stopAt, released: false };
+}
+
+function releaseVoice(v, t, tau) {
+  if (!v || v.released) return;
+  v.released = true;
+  try {
+    const gp = v.gain.gain;
+    if (typeof gp.cancelAndHoldAtTime === "function") gp.cancelAndHoldAtTime(t);
+    else {
+      gp.cancelScheduledValues(t);
+      gp.setValueAtTime(gp.value, t);
+    }
+    gp.linearRampToValueAtTime(0, t + tau);
+    const stopAt = t + tau + 0.02;
+    for (const { o } of v.oscs) {
+      try {
+        o.stop(stopAt);
+      } catch {
+        /* ignore */
+      }
+    }
+    v.stopAt = Math.min(v.stopAt, stopAt);
+  } catch {
+    /* ignore */
+  }
+}
+
+function releaseVoices(sfx, tau) {
+  if (!sfx?.voices?.length) return;
+  const t = sfx.ctx ? sfx.ctx.currentTime : 0;
+  for (const v of sfx.voices) releaseVoice(v, t, tau);
+}
+
+function pruneVoices(sfx, t) {
+  sfx.voices = sfx.voices.filter((v) => v.stopAt > t);
+  while (sfx.voices.length > MAX_VOICES) releaseVoice(sfx.voices.shift(), t, 0.03);
+}
+
+function playCrackle(sfx, t, worn) {
+  const peak = (0.025 + Math.random() * 0.045) * (worn ? 1.25 : 1);
+  playNoiseBurst(sfx, { t0: t, dur: 0.006 + Math.random() * 0.006, peak, hp: 1600, lp: 6400, attack: 0.001 });
+}
+
+/** その日の盤の曲の並び（溝ごとの曲・速さ）。音と描画が同じものを使う。 */
+export function programFor(state) {
+  return recordProgram(state?.seed || state?.dateJst || "", state?.params);
+}
+
 /**
- * state の差分を見て効果音を鳴らす。再生中の皿と音型はループで追従する。
+ * 盤の回転と針の状態から、いま曲のどこを鳴らすかを決める。
+ * 再生位置は針の半径そのもの（溝を内側へ進むほど曲が進む）なので、
+ * 皿が遅ければ曲も遅く低くなり、跳ねれば先へ飛び、上げれば止まる。
+ */
+function syncMusic(sfx, state, { t, omega, inst, seated }) {
+  const ctx = sfx.ctx;
+  const bus = sfx.music;
+  if (!ctx || !bus) return;
+  pruneVoices(sfx, t);
+  const params = state?.params;
+  const key = `${state?.seed}|${params?.tracks?.length}|${params?.playRate}`;
+  if (sfx.programKey !== key) {
+    sfx.program = programFor(state);
+    sfx.programKey = key;
+    sfx.musicPos = null;
+  }
+
+  // 古い盤らしい揺れ。回転が帯から外れるほど大きくうねる。
+  const depth = 0.0035 + (1 - inst) * 0.018;
+  const wow = 1 + depth * Math.sin(t * 2 * Math.PI * 1.1) + 0.0015 * Math.sin(t * 2 * Math.PI * 6.3);
+  const rate = Math.max(0.05, omega) * wow;
+  bus.lp.frequency.setTargetAtTime(1500 + 1900 * inst, t, 0.12);
+  for (const v of sfx.voices) {
+    if (v.released) continue;
+    for (const { o, mul } of v.oscs) o.frequency.setTargetAtTime(v.base * mul * rate, t, 0.03);
+  }
+
+  const playable = seated && omega > 0.15 && !state?.ruined;
+  if (!playable) {
+    if (sfx.voices.length) releaseVoices(sfx, 0.035);
+    sfx.musicPos = null;
+    return;
+  }
+
+  const worn = params?.wear === "worn";
+  const gap = (worn ? 0.09 : 0.16) / Math.max(0.3, omega);
+  if (t - (sfx.lastCrackleAt || 0) > gap * (0.3 + Math.random() * 1.7)) {
+    sfx.lastCrackleAt = t;
+    playCrackle(sfx, t, worn);
+  }
+
+  const ti = currentTrackIndex(state);
+  const prog = ti >= 0 ? sfx.program?.[ti] : null;
+  const rate0 = Number(params?.playRate) || 0;
+  if (!prog || rate0 <= 0) {
+    sfx.musicPos = null; // 曲間の溝。鳴っている音は自然に消える
+    return;
+  }
+  const tr = params.tracks[ti];
+  const trackT = (Math.max(tr.r0, tr.r1) - Number(state.radius)) / rate0;
+  const beat = beatAt(prog, trackT);
+  const prev = sfx.musicPos;
+  let from;
+  if (!prev || prev.track !== ti || beat < prev.beat - 1e-6 || beat - prev.beat > 1) {
+    // 落とし直し・跳ね・位置替え。前の音は切って、新しい位置から鳴らす
+    if (prev) releaseVoices(sfx, 0.05);
+    from = beat - 0.12;
+  } else {
+    from = prev.beat;
+  }
+  sfx.musicPos = { track: ti, beat };
+  if (beat <= from) return;
+  const secPerBeat = 60 / prog.tempo / Math.max(0.2, omega);
+  const score = tuneScore(prog.tune);
+  for (const ev of score.events) {
+    if (ev.beat >= prog.beats || ev.beat >= beat) break;
+    if (ev.beat < from) continue;
+    const left = ev.dur - (beat - ev.beat);
+    if (left <= 0.05) continue;
+    const dur = left * secPerBeat * (ev.part === "melody" ? 0.95 : 1);
+    sfx.voices.push(startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: t + 0.005, dur, rate }));
+  }
+}
+
+/**
+ * 曲を理想の再生（回転ぴったり）で OfflineAudioContext に描き出す。試聴用。
+ * @returns {Promise<AudioBuffer>}
+ */
+export function renderTuneOffline(tune, { sampleRate = 44100, tempo, bars, crackle = true } = {}) {
+  const OAC = globalThis.OfflineAudioContext || globalThis.webkitOfflineAudioContext;
+  const score = tuneScore(tune);
+  const tmp = tempo || tune.tempo;
+  const beats = bars ? score.barBeats.slice(0, bars).reduce((s, b) => s + b, 0) : score.totalBeats;
+  const spb = 60 / tmp;
+  const lead = 0.8;
+  const tail = 1.8;
+  const len = lead + beats * spb + tail;
+  const ctx = new OAC(1, Math.ceil(len * sampleRate), sampleRate);
+  const comp = ctx.createDynamicsCompressor();
+  comp.threshold.value = -16;
+  comp.knee.value = 12;
+  comp.ratio.value = 2.8;
+  comp.attack.value = 0.004;
+  comp.release.value = 0.18;
+  const master = ctx.createGain();
+  master.gain.value = MASTER_GAIN * 1.6;
+  master.connect(comp);
+  comp.connect(ctx.destination);
+  const bus = createMusicBus(ctx, master);
+  bus.lp.frequency.value = 3400;
+
+  // 溝のさーっという音と、ぷつぷつ
+  const nb = ctx.createBuffer(1, Math.floor(sampleRate * len), sampleRate);
+  const d = nb.getChannelData(0);
+  let last = 0;
+  let a = 0x9e3779b9;
+  const rnd = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  let nextClick = 0.2;
+  for (let i = 0; i < d.length; i++) {
+    const white = rnd() * 2 - 1;
+    last = last * 0.86 + white * 0.14;
+    let v = last * 0.5;
+    const ts = i / sampleRate;
+    if (crackle && ts >= nextClick) {
+      v += (rnd() < 0.5 ? -1 : 1) * (0.6 + rnd() * 1.4);
+      nextClick = ts + 0.04 + rnd() * 0.28;
+    }
+    d[i] = v;
+  }
+  const src = ctx.createBufferSource();
+  src.buffer = nb;
+  const bp = ctx.createBiquadFilter();
+  bp.type = "bandpass";
+  bp.frequency.value = 2400;
+  bp.Q.value = 0.5;
+  const ng = ctx.createGain();
+  ng.gain.value = 0.03;
+  src.connect(bp);
+  bp.connect(ng);
+  ng.connect(master);
+  src.start(0);
+
+  for (const ev of score.events) {
+    if (ev.beat >= beats) continue;
+    const dur = ev.dur * spb * (ev.part === "melody" ? 0.95 : 1);
+    startVoice(ctx, bus, { midi: ev.midi, part: ev.part, t0: lead + ev.beat * spb, dur, rate: 1 });
+  }
+  return ctx.startRendering();
+}
+
+/**
+ * state の差分を見て効果音を鳴らす。再生中の皿と曲は盤の回転に追従する。
  * @param {object} sfx
  * @param {object} state
  */

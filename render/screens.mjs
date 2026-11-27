@@ -31,6 +31,8 @@ export function bindScreens(root = document) {
     overHeading: root.querySelector("#screen-over h1"),
     overScore: root.querySelector("#over-score"),
     overGrade: root.querySelector("#over-grade"),
+    overTunes: root.querySelector("#over-tunes"),
+    titleTunes: root.querySelector("#title-tunes"),
     overToday: root.querySelector("#over-today"),
     overBest: root.querySelector("#over-best"),
     overNewBest: root.querySelector("#over-new-best"),
@@ -64,8 +66,15 @@ export function bindScreens(root = document) {
     }
   }
 
+  function setTunes(node, tunes) {
+    if (!node) return;
+    const list = Array.isArray(tunes) ? tunes.filter(Boolean) : [];
+    node.textContent = list.length ? `今日の曲　${list.map((t) => `『${t}』`).join("")}` : "";
+    node.hidden = !list.length;
+  }
+
   /**
-   * @param {{ dateLabel: string, bestScore: number | null, params?: object }} data
+   * @param {{ dateLabel: string, bestScore: number | null, params?: object, tunes?: string[] }} data
    */
   function showTitle(data) {
     setPlaying(false);
@@ -78,6 +87,11 @@ export function bindScreens(root = document) {
     setFinishEnabled(false);
     if (el.titleDaily) el.titleDaily.textContent = titleDailyLine(data.params);
     if (el.titleDate) el.titleDate.textContent = `今日の盤（${data.dateLabel}）`;
+    if (el.titleTunes) {
+      const list = Array.isArray(data.tunes) ? data.tunes.filter(Boolean) : [];
+      el.titleTunes.textContent = list.length ? ["今日の曲", ...list].join("\n") : "";
+      el.titleTunes.hidden = !list.length;
+    }
     if (el.titleRecord) {
       const best = data.bestScore;
       el.titleRecord.textContent =
@@ -117,6 +131,7 @@ export function bindScreens(root = document) {
     const score = Math.max(0, Math.floor(Number(data.score) || 0));
     if (el.overScore) el.overScore.textContent = `${formatScore(score)}点でした`;
     if (el.overGrade) el.overGrade.textContent = gradeResult(data.grade);
+    setTunes(el.overTunes, data.tunes);
     const today = Math.max(0, Math.floor(Number(data.todayBestScore) || 0));
     const best = Math.max(0, Math.floor(Number(data.bestScore) || 0));
     if (el.overToday) {

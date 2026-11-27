@@ -6,6 +6,7 @@
 import * as constants from "../engine/constants.mjs";
 import { drawFx, revealZoom } from "./fx.mjs";
 import { drawMotionGuides } from "./hand-guides.mjs";
+import { recordProgram } from "../engine/tunes.mjs";
 
 export const VIEW_W = constants.VIEW_W ?? 844;
 export const VIEW_H = constants.VIEW_H ?? 390;
@@ -774,6 +775,61 @@ export function drawTitlePreview(canvas, state) {
  * @param {object} state
  * @param {{ reducedMotion?: boolean, fx?: object, left?: object, right?: object }} [opts]
  */
+let programCache = { key: "", program: [] };
+
+function programOf(state) {
+  const params = state?.params;
+  const key = `${state?.seed}|${params?.tracks?.length}|${params?.playRate}`;
+  if (programCache.key !== key) {
+    programCache = { key, program: recordProgram(state?.seed || state?.dateJst || "", params) };
+  }
+  return programCache.program;
+}
+
+/** 針のいる溝の曲名（曲間・上げているときは次の曲）。 */
+export function tuneCaption(state) {
+  const tracks = tracksOf(state);
+  const program = programOf(state);
+  const radius = Number(state?.radius);
+  if (!tracks.length || !program.length || !Number.isFinite(radius)) return "";
+  for (let i = 0; i < tracks.length; i++) {
+    const hi = Math.max(tracks[i].r0, tracks[i].r1);
+    const lo = Math.min(tracks[i].r0, tracks[i].r1);
+    if (radius <= hi && radius >= lo) return `${i + 1}曲目『${program[i].title}』`;
+    if (radius > hi) return `つぎは ${i + 1}曲目『${program[i].title}』`;
+  }
+  return "盤の終わり";
+}
+
+/** 箱の正面の真鍮の札に、いまの曲名を出す。 */
+function drawTunePlate(ctx, view, state) {
+  const text = tuneCaption(state);
+  if (!text) return;
+  const cx = view.sx(457);
+  const y = view.sy(343);
+  const w = view.px(232);
+  const h = view.px(24);
+  ctx.save();
+  const g = ctx.createLinearGradient(cx - w / 2, y, cx + w / 2, y + h);
+  g.addColorStop(0, "#b08a4c");
+  g.addColorStop(0.5, "#e2c58a");
+  g.addColorStop(1, "#a8834a");
+  ctx.fillStyle = g;
+  ctx.strokeStyle = rgba("#2a1c14", 0.55);
+  ctx.lineWidth = Math.max(1, view.px(1.2));
+  ctx.beginPath();
+  if (typeof ctx.roundRect === "function") ctx.roundRect(cx - w / 2, y, w, h, view.px(3));
+  else ctx.rect(cx - w / 2, y, w, h);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#2a1c14";
+  ctx.font = `700 ${Math.max(10, view.px(12.5))}px ${FONT}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, cx, y + h / 2 + view.px(0.5), w - view.px(12));
+  ctx.restore();
+}
+
 export function drawScene(ctx, state, opts = {}) {
   const canvas = ctx.canvas;
   const { cssW, cssH, dpr } = syncCanvasSize(canvas);
@@ -809,6 +865,7 @@ export function drawScene(ctx, state, opts = {}) {
 
   const playing = state?.status === "playing";
   const phase = state?.phase;
+  if (playing && phase !== "reveal") drawTunePlate(ctx, view, state);
   const showControls = playing && phase !== "reveal";
 
   const leftPos = leftThumbPos(opts.left);
