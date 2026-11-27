@@ -6,6 +6,8 @@
 import * as constants from "../engine/constants.mjs";
 import { dailyCondition, formatScore, gradeCallout } from "./share.mjs";
 
+const { pitchInst } = constants;
+
 export const JUDGE_BALLOON_OFFSET = constants.JUDGE_BALLOON_OFFSET ?? 70;
 export const TRAIL_CAP = 280;
 export const BITS_CAP = 14;
@@ -17,6 +19,44 @@ export const FAST_OMEGA = constants.FAST_OMEGA ?? 1.14;
 export const SLOW_OMEGA = constants.SLOW_OMEGA ?? 0.86;
 export const PITCH_HALF = constants.PITCH_HALF ?? 0.08;
 export const LESSON_TEXT = "曲の頭で落として、傷の前で上げる";
+
+/** 灯の位置（ハンドル右・箱の正面、盤とヒントと重ならない隙間）。 */
+export const LAMP_CX = 336;
+export const LAMP_CY = 258;
+/** |signal-1| がこれ以上なら、はっきり遅い／速いとみなす。 */
+export const LAMP_CLEAR = 0.22;
+/** 案内を消すときの余裕（点滅を防ぐ）。 */
+export const LAMP_RELEASE = 0.14;
+/** 回しているときは手の速さを見る下限（回/秒）。 */
+export const LAMP_CRANK_MIN = 0.18;
+
+/**
+ * 灯と案内の速さ。回しているときはハンドルの速さ（rateMid を 1 とする比）、
+ * 手を離しているときは皿の omega。音そのものではなく、いま直せる手の速さを示す。
+ */
+export function lampSignal(state) {
+  const omega = Number(state?.omega) || 0;
+  const mid = Number(state?.params?.rateMid) || 1.12;
+  const rate = Number(state?.left?.crankRate) || 0;
+  if (mid > 0 && rate > LAMP_CRANK_MIN) return rate / mid;
+  return omega;
+}
+
+/** @param {string} [prev] */
+export function lampCueFrom(signal, prev = "") {
+  const o = Number(signal) || 0;
+  if (o < 1 - LAMP_CLEAR) return "slow";
+  if (o > 1 + LAMP_CLEAR) return "fast";
+  if (prev === "slow" && o <= 1 - LAMP_RELEASE) return "slow";
+  if (prev === "fast" && o >= 1 + LAMP_RELEASE) return "fast";
+  return "";
+}
+
+export function lampCueText(cue) {
+  if (cue === "slow") return "もっと速く";
+  if (cue === "fast") return "ゆっくり";
+  return "";
+}
 
 const FONT = `"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif`;
 
@@ -128,8 +168,6 @@ export function statusFrom(state) {
   if (seated && nextScratchIn(state) <= SCRATCH_WARN) return "傷が近い";
   if ((Number(state?.left?.wind) || 0) < WIND_WARN) return "巻きが弱くなってきた";
   const omega = Number(state?.omega) || 0;
-  if (omega > FAST_OMEGA) return "速すぎ";
-  if (seated && omega < SLOW_OMEGA) return "遅すぎ";
   const radius = Number(state?.radius);
   if (
     seated &&
@@ -162,6 +200,9 @@ export function createFx() {
     overlayX: 455,
     overlayY: 192,
     seatedGlow: 0,
+    lampGlow: 0,
+    lampCue: "",
+    lampCueAlpha: 0,
     prev: null,
   };
 }
@@ -184,6 +225,9 @@ export function resetFx(fx) {
   fx.overlayX = 455;
   fx.overlayY = 192;
   fx.seatedGlow = 0;
+  fx.lampGlow = 0;
+  fx.lampCue = "";
+  fx.lampCueAlpha = 0;
   fx.prev = null;
 }
 
@@ -268,6 +312,9 @@ export function syncFx(fx, state, dt, opts = {}) {
     fx.dailyAlpha = 0;
     fx.lessonAlpha = 0;
     fx.seatedGlow = 0;
+    fx.lampGlow = 0;
+    fx.lampCue = "";
+    fx.lampCueAlpha = 0;
     fx.prev = {
       status: state?.status,
       phase: state?.phase,
@@ -314,6 +361,16 @@ export function syncFx(fx, state, dt, opts = {}) {
   const glowWant =
     nextStatus === "溝に乗っている" ? 1 : 0;
   fx.seatedGlow += (glowWant - fx.seatedGlow) * (1 - Math.exp(-t / 0.18));
+
+  const playingLamp = !!(playing && (phase === "place" || phase === "play"));
+  const signal = lampSignal(state);
+  const glowTarget = playingLamp ? pitchInst(signal) : 0;
+  fx.lampGlow += (glowTarget - fx.lampGlow) * (1 - Math.exp(-t / 0.14));
+  const nextCue = playingLamp ? lampCueFrom(signal, fx.lampCue) : "";
+  if (nextCue) fx.lampCue = nextCue;
+  const cueWant = nextCue ? 1 : 0;
+  fx.lampCueAlpha += (cueWant - fx.lampCueAlpha) * (1 - Math.exp(-t / 0.14));
+  if (fx.lampCueAlpha < 0.02 && !nextCue) fx.lampCue = "";
 
   const zoomTarget = playing && phase === "reveal" ? 1 : 1;
   fx.revealZoom += (zoomTarget - fx.revealZoom) * (1 - Math.exp(-t / 0.25));
@@ -442,8 +499,10 @@ export function drawFx(ctx, fx, view, state) {
         reduced || fx.statusText !== "溝に乗っている"
           ? 1
           : 1 + 0.03 * Math.sin((Number(fx.clock) || 0) * Math.PI * 2 * 2.0);
+      // 灯の案内と同じ高さに重ならないよう、案内が出ているときは右へずらす
+      const statusX = (Number(fx.lampCueAlpha) || 0) > 0.15 ? sx(548) : discX;
       ctx.save();
-      ctx.translate(discX, sy(300));
+      ctx.translate(statusX, sy(300));
       ctx.scale(pulse, pulse);
       pill(fx.statusText, 0, 0, fx.statusAlpha, 14);
       ctx.restore();

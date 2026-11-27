@@ -4,7 +4,8 @@
  */
 
 import * as constants from "../engine/constants.mjs";
-import { drawFx, revealZoom } from "./fx.mjs";
+import { pitchInst } from "../engine/constants.mjs";
+import { drawFx, LAMP_CX, LAMP_CY, lampCueText, revealZoom } from "./fx.mjs";
 import { drawMotionGuides } from "./hand-guides.mjs";
 import { programFor as programForParams, programSessionId } from "../engine/tunes.mjs";
 
@@ -341,7 +342,9 @@ function drawHandle(ctx, view, state, fx) {
   const omega = Number(state?.omega) || 0;
   const rateMid = Number(state?.params?.rateMid) || 1.6;
   const ratio = rateMid > 0 ? (Number(state?.left?.crankRate) || 0) / rateMid : omega;
-  const inBand = Math.abs(omega - 1) <= 0.08 || Math.abs(ratio - 1) <= 0.08;
+  const glow = Number.isFinite(Number(fx?.lampGlow))
+    ? clamp01(fx.lampGlow)
+    : pitchInst(Math.abs(ratio) > 0.18 ? ratio : omega);
 
   ctx.save();
   ctx.beginPath();
@@ -353,7 +356,8 @@ function drawHandle(ctx, view, state, fx) {
   ctx.fillStyle = g;
   ctx.fill();
   ctx.lineWidth = Math.max(2, view.px(4));
-  ctx.strokeStyle = inBand ? rgba(HORN_A, 0.95) : rgba(METAL, 0.7);
+  ctx.strokeStyle = rgba(HORN_A, 0.35 + 0.6 * glow);
+  if (glow < 0.2) ctx.strokeStyle = rgba(METAL, 0.7);
   ctx.stroke();
 
   // 速さの帯。数値は出さない
@@ -365,14 +369,14 @@ function drawHandle(ctx, view, state, fx) {
   ctx.stroke();
   ctx.beginPath();
   ctx.arc(cx, cy, r - view.px(7), -Math.PI * 0.58, -Math.PI * 0.42);
-  ctx.strokeStyle = inBand ? rgba(HORN_A, 0.95) : rgba(HORN_A, 0.55);
+  ctx.strokeStyle = rgba(HORN_A, 0.5 + 0.5 * glow);
   ctx.lineWidth = Math.max(3.5, view.px(6));
   ctx.stroke();
   const pip = -Math.PI * 0.75 + clamp(ratio, 0, 2) * (Math.PI * 0.25);
   ctx.beginPath();
   const pr = r - view.px(7);
   ctx.arc(cx + Math.cos(pip) * pr, cy + Math.sin(pip) * pr, view.px(5), 0, Math.PI * 2);
-  ctx.fillStyle = inBand ? HORN_A : CREAM;
+  ctx.fillStyle = glow > 0.7 ? "#f0c060" : glow > 0.25 ? HORN_A : CREAM;
   ctx.fill();
   ctx.strokeStyle = INK;
   ctx.lineWidth = Math.max(1, view.px(1));
@@ -624,6 +628,121 @@ function drawLift(ctx, view, state) {
   ctx.restore();
 }
 
+function drawSpeedLamp(ctx, view, state, fx) {
+  const cx = view.sx(LAMP_CX);
+  const cy = view.sy(LAMP_CY);
+  const glow = clamp01(Number(fx?.lampGlow) || 0);
+  const bulbR = view.px(11);
+  const bezelR = view.px(15);
+
+  ctx.save();
+
+  if (glow > 0.02) {
+    const haloR = view.px(56);
+    const halo = ctx.createRadialGradient(cx, cy, bulbR * 0.1, cx, cy, haloR);
+    halo.addColorStop(0, rgba("#fff8d0", 0.95 * glow));
+    halo.addColorStop(0.22, rgba("#ffd36a", 0.7 * glow));
+    halo.addColorStop(0.55, rgba("#f0a838", 0.32 * glow));
+    halo.addColorStop(1, rgba("#c48430", 0));
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(cx, cy, haloR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // 短い真鍮の台。箱の正面に乗る
+  ctx.fillStyle = HORN_B;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === "function") {
+    ctx.roundRect(cx - view.px(7), cy + view.px(8), view.px(14), view.px(16), view.px(2));
+  } else {
+    ctx.rect(cx - view.px(7), cy + view.px(8), view.px(14), view.px(16));
+  }
+  ctx.fill();
+  ctx.strokeStyle = rgba("#2a1c14", 0.35);
+  ctx.lineWidth = Math.max(1, view.px(1));
+  ctx.stroke();
+
+  const bez = ctx.createLinearGradient(cx - bezelR, cy - bezelR, cx + bezelR, cy + bezelR);
+  bez.addColorStop(0, "#e8d09a");
+  bez.addColorStop(0.45, "#c4a060");
+  bez.addColorStop(1, "#6a4e28");
+  ctx.beginPath();
+  ctx.arc(cx, cy, bezelR, 0, Math.PI * 2);
+  ctx.fillStyle = bez;
+  ctx.fill();
+  ctx.strokeStyle = rgba("#2a1c14", 0.5);
+  ctx.lineWidth = Math.max(1, view.px(1.1));
+  ctx.stroke();
+
+  const glass = ctx.createRadialGradient(
+    cx - bulbR * 0.32,
+    cy - bulbR * 0.38,
+    bulbR * 0.08,
+    cx,
+    cy,
+    bulbR,
+  );
+  if (glow > 0.08) {
+    glass.addColorStop(0, rgba("#fffdf0", 0.55 + 0.45 * glow));
+    glass.addColorStop(0.35, rgba("#ffe07a", 0.5 + 0.5 * glow));
+    glass.addColorStop(0.75, rgba("#f0a830", 0.55 + 0.45 * glow));
+    glass.addColorStop(1, rgba("#c46818", 0.6 + 0.4 * glow));
+  } else {
+    glass.addColorStop(0, "#4a3a28");
+    glass.addColorStop(0.55, "#2a1c10");
+    glass.addColorStop(1, "#16100a");
+  }
+  ctx.beginPath();
+  ctx.arc(cx, cy, bulbR, 0, Math.PI * 2);
+  ctx.fillStyle = glass;
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx - bulbR * 0.28, cy - bulbR * 0.32, bulbR * 0.28, 0, Math.PI * 2);
+  ctx.fillStyle = rgba("#fffdf2", 0.12 + 0.7 * glow);
+  ctx.fill();
+
+  const cue = lampCueText(fx?.lampCue);
+  const alpha = clamp01(Number(fx?.lampCueAlpha) || 0);
+  const showCue = !!(
+    cue &&
+    alpha > 0.05 &&
+    state?.status === "playing" &&
+    state?.phase !== "reveal"
+  );
+  if (showCue) {
+    // 灯の下、箱の正面。盤・ハンドル・巻きの筒・札と重ねない
+    const tx = cx + view.px(10);
+    const ty = cy + view.px(46);
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    const size = Math.max(13, view.px(14.5));
+    ctx.font = `700 ${size}px ${FONT}`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    const tw = ctx.measureText(cue).width;
+    const padX = view.px(8);
+    const padY = view.px(4);
+    const h = Math.max(18, size + view.px(4));
+    ctx.fillStyle = rgba("#f3eee4", 0.94);
+    ctx.strokeStyle = rgba("#1c2430", 0.16);
+    ctx.lineWidth = Math.max(1, view.px(1));
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") {
+      ctx.roundRect(tx - tw / 2 - padX, ty - h / 2 - padY, tw + padX * 2, h + padY * 2, 6);
+    } else {
+      ctx.rect(tx - tw / 2 - padX, ty - h / 2 - padY, tw + padX * 2, h + padY * 2);
+    }
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#1c2430";
+    ctx.fillText(cue, tx, ty + view.px(0.5));
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
 function drawThumbGuide(ctx, view, x, y, active, hint) {
   const r = view.px(THUMB_GUIDE_R);
   ctx.save();
@@ -860,6 +979,7 @@ export function drawScene(ctx, state, opts = {}) {
   drawCabinet(ctx, view);
   drawSpringBox(ctx, view, state);
   drawHandle(ctx, view, state, fx);
+  drawSpeedLamp(ctx, view, state, fx);
 
   const playing = state?.status === "playing";
   const phase = state?.phase;
