@@ -126,7 +126,7 @@ export function statusFrom(state) {
   const seated = !!state?.seated;
   if (seated && runoutIn(state) <= RUNOUT_WARN) return "終わりが近い";
   if (seated && nextScratchIn(state) <= SCRATCH_WARN) return "傷が近い";
-  if ((Number(state?.left?.wind) || 0) < WIND_WARN) return "ぜんまいが落ちてきた";
+  if ((Number(state?.left?.wind) || 0) < WIND_WARN) return "巻きが弱くなってきた";
   const omega = Number(state?.omega) || 0;
   if (omega > FAST_OMEGA) return "速すぎ";
   if (seated && omega < SLOW_OMEGA) return "遅すぎ";
